@@ -38,6 +38,26 @@ function backfillPolicyViolations(body: string): string[] {
     ['schema-shaped affects', /affects[\s\S]{0,160}type[\s\S]{0,100}pattern/],
     ['MCP worktree and corpus identity', /ADRKIT_MCP_CWD[\s\S]{0,240}ADRKIT_MCP_DIR[\s\S]{0,240}ADR_DIR/],
     ['scoped MADR preview', /migrate --from madr --dir "\$ADR_DIR" --dry-run/],
+    // ADR-0038 as amended. These live in `required` rather than in the bootstrap
+    // test alone because this checker runs against the command AND the skill:
+    // `/adr-backfill` loads the command, so detection guidance that exists only
+    // in the skill is unreachable from the entry point people actually invoke.
+    ['bootstrap record offered, not mined', /offer,\s+not\s+a\s+candidate/i],
+    [
+      'bootstrap detection reads all three buckets',
+      /`governing`[\s\S]{0,700}`activeProposals`[\s\S]{0,700}`history`/,
+    ],
+    ['bootstrap exit code precedes the buckets', /exit code before[\s\S]{0,200}bucket/i],
+    [
+      'adopting adrkit never supersedes the process decision',
+      /never\s+a\s+supersession\s+of\s+the\s+decision\s+to\s+record\s+decisions/i,
+    ],
+    // Found by a functional run, not by reading: `adr new` scaffolds
+    // `affects: []`, so the bootstrap record written through the offer's own
+    // prescribed path binds nothing and is invisible to the detection above —
+    // every bucket comes back empty and the next audit offers it again. The
+    // matcher is what makes the record detectable, so the offer has to say so.
+    ['bootstrap record must bind the corpus directory', /scaffolds `affects: \[\]`/],
   ];
 
   for (const [name, pattern] of required) {
@@ -54,6 +74,9 @@ function backfillPolicyViolations(body: string): string[] {
     ['negated trust confirmation', /do not require trust confirmation/i],
     ['unverified MCP identity', /use MCP without confirming/i],
     ['string affects matcher', /affects:\s*\[[^\]]+\]/i],
+    ['bootstrap record admitted as a candidate', /bootstrap record is (?:a |an |admitted as a )?candidate/i],
+    ['adopting adrkit supersedes the process decision', /adopting adrkit supersedes/i],
+    ['absence concluded from the governing bucket alone', /empty `governing` bucket alone/i],
   ];
 
   for (const [name, pattern] of forbidden) {
@@ -362,6 +385,11 @@ describe('guidance that must not regress', () => {
       'missing: history key is exact',
       'missing: schema-shaped affects',
       'missing: MCP worktree and corpus identity',
+      'missing: bootstrap record offered, not mined',
+      'missing: bootstrap detection reads all three buckets',
+      'missing: bootstrap exit code precedes the buckets',
+      'missing: adopting adrkit never supersedes the process decision',
+      'missing: bootstrap record must bind the corpus directory',
       'forbidden: negated read-only boundary',
       'forbidden: automatic proposal',
       'forbidden: negated plan status',
@@ -371,6 +399,9 @@ describe('guidance that must not regress', () => {
       'forbidden: negated trust confirmation',
       'forbidden: unverified MCP identity',
       'forbidden: string affects matcher',
+      'forbidden: bootstrap record admitted as a candidate',
+      'forbidden: adopting adrkit supersedes the process decision',
+      'forbidden: absence concluded from the governing bucket alone',
     ]);
   });
 
@@ -403,6 +434,110 @@ describe('guidance that must not regress', () => {
     }
   });
 
+  test('backfill offers the bootstrap record outside the candidate handoff', () => {
+    // A repository with no corpus is missing two decisions at once: to record
+    // decisions at all, and to enforce them with adrkit. Neither is archaeology
+    // — no source span proves a human ratified either, so both fail this
+    // skill's own admission rule and cannot become evidence-backed candidates.
+    // They also cannot travel through a `backfillHandoff`: the governed path is
+    // the corpus directory, a glob that may not exist yet, so there are no
+    // concrete `candidatePaths` to snapshot. Routing them to plain `/adr-draft`
+    // is what keeps the handoff contract intact.
+    const body = readFileSync(join(packageRoot, 'skills', 'decision-backfill', 'SKILL.md'), 'utf8');
+
+    // Both surfaces, because `/adr-backfill` loads the COMMAND. The skill can
+    // carry perfect guidance the entry point never reaches: an earlier revision
+    // of this change edited only the skill, and the offer was unreachable from
+    // the command users actually invoke. Trimming the command file must fail
+    // here rather than silently drop the feature.
+    const command = readFileSync(join(packageRoot, 'commands', 'adr-backfill.md'), 'utf8');
+    for (const [label, text] of [['SKILL.md', body], ['adr-backfill.md', command]] as const) {
+      expect({ label, offers: /bootstrap record/i.test(text) }).toEqual({ label, offers: true });
+      expect({
+        label,
+        notACandidate: /not\s+a\s+candidate|offer,\s+not\s+a\s+candidate/i.test(text),
+      }).toEqual({ label, notACandidate: true });
+      expect({
+        label,
+        neverSupersedes: /never\s+a\s+supersession\s+of\s+the\s+decision\s+to\s+record\s+decisions/i.test(text),
+      }).toEqual({ label, neverSupersedes: true });
+
+      // Detection has to come from the CLI: this skill forbids hand-parsing
+      // frontmatter, and an invalid record drops out of the parsed corpus, so a
+      // grep for a meta tag can be confidently wrong. These ran against the
+      // skill only until 0.3.1; the command is the entry point `/adr-backfill`
+      // actually loads, so guidance it lacks is guidance nobody executes.
+      expect({
+        label,
+        detects: /adr check --dir "\$ADR_DIR" --json/.test(text),
+      }).toEqual({ label, detects: true });
+      expect({
+        label,
+        exitBeforeBucket: /Only\s+on\s+exit\s+`0`/i.test(text),
+      }).toEqual({ label, exitBeforeBucket: true });
+      expect({ label, madrTrap: /unmigrated\s+MADR\s+corpus/i.test(text) }).toEqual({
+        label,
+        madrTrap: true,
+      });
+
+      // `governing` holds `accepted` alone. A process record that is `proposed`
+      // — which is what `/adr-draft` writes, so it is the state the tool's own
+      // output lands in — sits in `activeProposals`, and a `rejected` one sits
+      // in `history`. Reading `governing` by itself reports both as absent and
+      // offers a duplicate: backfill re-offering its own unratified output, and
+      // re-proposing a decision the team explicitly abandoned.
+      expect({
+        label,
+        readsAllThreeBuckets:
+          /`governing`[\s\S]{0,700}`activeProposals`[\s\S]{0,700}`history`/.test(text),
+      }).toEqual({ label, readsAllThreeBuckets: true });
+      expect({
+        label,
+        alreadyProposed: /already\s+proposed/i.test(text),
+      }).toEqual({ label, alreadyProposed: true });
+      expect({
+        label,
+        neverRepropose: /never\s+re-propose/i.test(text),
+      }).toEqual({ label, neverRepropose: true });
+    }
+
+    expect({ offered: /bootstrap record/i.test(body) }).toEqual({ offered: true });
+    expect({
+      excluded: /out\s+of\s+the\s+candidates\s+table\s+and\s+out\s+of\s+every\s+`backfillHandoff`/i.test(body),
+    }).toEqual({ excluded: true });
+    expect({ routed: /name\s+plain\s+`\/adr-draft`/i.test(body) }).toEqual({ routed: true });
+
+    // The edge is the part that is easy to get backwards. Adopting the tool
+    // depends on the decision to keep records; it can never replace it. The
+    // only legitimate supersession target is a *prior tooling* record.
+    expect({
+      neverSupersedesProcess: /never\s+a\s+supersession\s+of\s+the\s+decision\s+to\s+record\s+decisions/i.test(body),
+    }).toEqual({ neverSupersedesProcess: true });
+    expect({
+      supersedesPriorTooling: /prior tooling record[\s\S]{0,200}`supersedes`/i.test(body),
+    }).toEqual({ supersedesPriorTooling: true });
+
+    // A MADR corpus is migrated, not superseded.
+    expect({ madrKept: /migrate --from madr[\s\S]{0,200}reverses nothing/i.test(body) }).toEqual({
+      madrKept: true,
+    });
+
+    // Measured, not reasoned about: against an unmigrated MADR corpus every
+    // record fails the frontmatter fence, so NOTHING parses, `governing` comes
+    // back empty, and `adr check` exits 1 with `frontmatter-fence` errors — even
+    // when one of those unparsed records is the process decision itself. An
+    // agent that reads the empty bucket without reading the exit code first
+    // offers a duplicate of a record the repository already has, which is the
+    // precise failure ADR-0038 names as proof the design is wrong.
+    // The corpus-wide signal, not `adr check`'s. `adr check`'s exit code is
+    // scoped to the paths it was handed (ADR-0022), so a malformed process
+    // record elsewhere in the corpus leaves it at `0` with an empty result.
+    // Corpus-wide `adr lint` is what actually catches that.
+    expect({
+      corpusWideGate: /adr lint[\s\S]{0,400}exit `0`[\s\S]{0,300}before/i.test(body),
+    }).toEqual({ corpusWideGate: true });
+  });
+
   test('draft consumes a complete backfill handoff without adding a writer', () => {
     const body = readFileSync(join(packageRoot, 'commands', 'adr-draft.md'), 'utf8');
     for (const field of [
@@ -429,6 +564,32 @@ describe('guidance that must not regress', () => {
     expect(body).toMatch(/Any difference means the handoff is stale/);
     expect(body).toMatch(/key must be exactly `history`, not\s+`historical`/);
     expect(body).toMatch(/missing any field, stop without writing/);
+  });
+
+  test('draft can write the bootstrap record into a repository with no corpus', () => {
+    // The offer's whole audience is a repository with no `docs/adr/`. Routing
+    // it to `/adr-draft` is only coherent if `/adr-draft` can write there.
+    // Measured: `adr lint --dir docs/adr` exits `2` on a repository with no
+    // corpus, and a blanket "exit `2` stops" gate therefore halts before the
+    // scaffolding step -- while `adr new` on that same repository exits `0`,
+    // creates the directory and allocates `0001`, because `createAdr` calls
+    // mkdir recursively. The gate was blocking a capability the CLI has.
+    const body = readFileSync(join(packageRoot, 'commands', 'adr-draft.md'), 'utf8');
+
+    expect({
+      absentCorpusBranch: /does not exist\s+yet|has no corpus\s+yet/i.test(body),
+    }).toEqual({ absentCorpusBranch: true });
+    expect({
+      namesTheCreatingVerb:
+        /`adr new`[\s\S]{0,240}creates?\s+(?:it|the\s+corpus\s+directory)/i.test(body),
+    }).toEqual({ namesTheCreatingVerb: true });
+
+    // The narrower gate must stay a gate: a corpus that exists and does not
+    // parse is still a hard stop, because absence cannot be distinguished from
+    // a parse failure there.
+    expect({
+      stillStopsOnUnparseableCorpus: /exit `1`[\s\S]{0,200}blocks drafting/i.test(body),
+    }).toEqual({ stillStopsOnUnparseableCorpus: true });
   });
 });
 

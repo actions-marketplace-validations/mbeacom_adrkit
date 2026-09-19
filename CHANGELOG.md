@@ -9,6 +9,108 @@ Until `1.0.0`, minor releases may include breaking changes
 
 ## [Unreleased]
 
+### Fixed
+
+- **The bootstrap offer reads every bucket, and its write path works
+  (`adrkit` 0.3.1).** Three defects shipped in 0.3.0, each found by executing the
+  CLI rather than reasoning about it, and each of which offered a repository a
+  decision record it did not need.
+
+  `adr check`'s `governing` bucket holds `accepted` records **alone**. Detection
+  read it by itself, so a process record that was `proposed` — which is exactly
+  what `/adr-draft` writes — or one that had been `rejected` came back as
+  absence. Measured: that record returns exit `0` with `governing: []` and
+  `activeProposals: ["0001"]`, or `history: ["0001"]` when rejected. The
+  consequence was circular: backfill offered the bootstrap record, `/adr-draft`
+  wrote it `proposed`, and the next run offered the same decision again. A
+  `rejected` record was re-proposed, which the decision-memory skill names as the
+  third failure it exists to prevent. Detection now reads all three buckets and
+  distinguishes *already proposed* (ratify it) from *settled against* (never
+  re-propose).
+
+  The exit-code guard read `adr check`'s exit code as though it certified the
+  corpus. It is scoped to the paths it was handed, so a malformed process record
+  beside a healthy one returns exit `0` with *empty* findings while corpus-wide
+  `adr lint` exits `1`. The corpus-wide gate is now `adr lint`.
+
+  The offer named `/adr-draft`, whose gate stopped on `adr lint` exit `2` —
+  precisely what a repository with no corpus returns — so the headline case could
+  not be written at all. `adr new` exits `0` there and creates the corpus, because
+  `createAdr` makes the directory itself. That gate is now narrowed to the absent-
+  corpus case; an unparseable corpus is still a hard stop.
+
+  A fourth defect surfaced only when the write path was exercised end to end for
+  the first time, in an ephemeral consumer repository: `adr new` scaffolds
+  `affects: []`, so the bootstrap record written through the offer's own
+  prescribed path binds nothing. A record with no matcher is invisible to
+  detection however many buckets are read — every bucket empty, and the next
+  audit offers the same decision again. ADR-0038 had listed precisely this under
+  *how we would know this was wrong*; it was the default behavior all along. The
+  offer now states that the record must carry an `affects` matcher covering the
+  corpus directory.
+
+  Detection guidance also now lives in `commands/adr-backfill.md`, not the skill
+  alone: `/adr-backfill` loads the command, so a procedure only the skill carried
+  was unreachable from the entry point people invoke. The safety-policy checker
+  enforces this against both surfaces, and the retained contradictory fixture
+  gained the matching negative cases
+  ([ADR-0038](docs/adr/0038-offer-the-bootstrap-decision-record-as-an-offer-rather-than-a-backfill-candidate.md)).
+
+### Changed
+
+- **ADR-0038 is ratified.** Accepted by `@mbeacom` on 2026-09-15, after the
+  corrections above and the first functional run of the write path. The decision
+  is unchanged from the original proposal; what was wrong was the mechanic
+  implementing it. Three action items remain open and are tracked rather than
+  closed by ratification: a host run confirming the offer is surfaced, `ADR_DIR`
+  resolution ignoring repository discovery, and mirroring the no-corpus clause
+  into `/adr-context` and `/adr-check`.
+
+
+### Added
+
+- **The agent plugin offers the bootstrap decision record (`adrkit` 0.3.0).** A
+  repository with no ADR corpus, or one whose corpus never recorded why it keeps
+  decisions, is now offered the process decision (keep decisions in git) and the
+  tooling decision (enforce them with adrkit). It is an **offer, not a
+  candidate**: no source span proves a human ratified either choice, so it fails
+  backfill's evidence rule and is kept out of the candidates table and out of
+  every `backfillHandoff` — whose concrete `candidatePaths` it could never supply,
+  since the path it governs is the corpus directory. It routes to plain
+  `/adr-draft` instead. Adopting adrkit is never a supersession of the decision
+  to record decisions: `supersedes` is reserved for a prior *tooling* record,
+  a MADR corpus is migrated rather than superseded, and the governing process
+  record is detected through `adr check`'s `governing` bucket rather than by
+  hand-parsing frontmatter — reading `adr check`'s **exit code before its
+  `governing` bucket**, because an unmigrated MADR corpus returns an empty
+  bucket at exit `1` when nothing parses, and offering the process decision
+  there would duplicate a record the repository already has. Detection is
+  measured against synthetic corpora; host surfacing behavior is unverified
+  ([ADR-0038](docs/adr/0038-offer-the-bootstrap-decision-record-as-an-offer-rather-than-a-backfill-candidate.md)).
+
+## [spec-kit-0.1.4] - 2026-09-13
+
+### Changed
+
+- **The Spec Kit pin is widened to `>=0.13.0,<1.1.0`.**
+  Re-verified, not bumped on inference: the upstream extension API reference
+  changed only additively from 0.13.0 through 1.0.6 (byte-identical from 0.16.5
+  through 1.0.6), the loader removed nothing the extension uses, and the
+  extension was installed and rendered on 0.16.5, 1.0.0, and 1.0.4–1.0.6 with
+  the `after_plan` hook registering `optional: true` and no development files
+  deposited. The previous pin provably rejects 1.0.4 with a compatibility
+  error — the intended fail-loud behavior on an unverified minor
+  ([ADR-0019](docs/adr/0019-ship-the-spec-kit-extension-treating-the-spike-no-go-as-a-measurement-artifact.md),
+  2026-09-09 and 2026-09-12 addenda).
+
+  The upper bound is a **minor-granularity** verification boundary: it is
+  verified at the endpoints and samples of each admitted line, not at every
+  upstream patch. `<1.1.0` asserts "verified through the `1.0` line"; 1.1.0 is
+  where the extension fails loud and re-verification is owed. Spec Kit 1.0.6
+  additionally credits `extension.author` in generated skill metadata, where
+  1.0.4 emitted the host's name — an upstream improvement that needed no change
+  here.
+
 ## [0.13.0] - 2026-08-30
 
 ### Added
@@ -1375,6 +1477,7 @@ against live Spec Kit, rather than reasoning about it:
 [0.6.0]: https://github.com/mbeacom/adrkit/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/mbeacom/adrkit/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/mbeacom/adrkit/compare/v0.3.0...v0.4.0
+[spec-kit-0.1.4]: https://github.com/mbeacom/adrkit/compare/spec-kit-v0.1.3...spec-kit-v0.1.4
 [spec-kit-0.1.3]: https://github.com/mbeacom/adrkit/compare/spec-kit-v0.1.2...spec-kit-v0.1.3
 [spec-kit-0.1.2]: https://github.com/mbeacom/adrkit/compare/spec-kit-v0.1.1...spec-kit-v0.1.2
 [spec-kit-0.1.1]: https://github.com/mbeacom/adrkit/compare/spec-kit-v0.1.0...spec-kit-v0.1.1

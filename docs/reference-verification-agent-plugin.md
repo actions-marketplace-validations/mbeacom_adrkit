@@ -249,6 +249,110 @@ because they are release-policy decisions rather than defects:
   state. Pinning to a cut ref, or protecting the directory behind a single
   reviewed release commit, are both real options with different costs.
 
+## v0.3.0 bootstrap-record guidance (2026-09-08)
+
+`decision-backfill` gained one section: a repository with no corpus, or one
+whose corpus never recorded why it keeps decisions, is offered the process and
+tooling decisions as an **offer rather than a candidate**, routed to plain
+`/adr-draft` and excluded from every `backfillHandoff`. `decision-memory` gained
+a matching clause on its no-corpus branch.
+
+**This addition is contract- and static-host-validated only.** It has no
+functional run of any kind — no Copilot synthetic-consumer exercise, no
+reference repository, no external adopter.
+
+| Check | Command | Observed |
+|---|---|---|
+| Contract | `bun test packages/adapters/agent-plugin/` | 40 pass, 0 fail |
+| Claude Code | `claude plugin validate packages/adapters/agent-plugin` | PASS |
+| Claude Code | `claude plugin validate .claude-plugin/marketplace.json` | PASS |
+
+The new wiring test was observed failing before the guidance was written, per
+[ADR-0016](./adr/0016-require-every-check-to-be-observed-failing-before-it-counts-as-coverage.md).
+It asserts the two properties that are easy to regress: the bootstrap record
+stays out of the candidates table and out of every `backfillHandoff`, and
+adopting adrkit carries a `relatesTo` edge to a process record while reserving
+`supersedes` for a *prior tooling* record.
+
+### Detection measured against synthetic corpora
+
+The `governing`-bucket detection was exercised directly against throwaway
+repositories rather than reasoned about, using a CLI built from this worktree
+and reporting `0.13.0` (an earlier pass used a stale `0.5.0` dist and was
+re-run):
+
+| Corpus | `adr check --json` over a path | Exit | `governing` | Reading |
+|---|---|---|---|---|
+| `docs/adr/` absent | any changed file | `2` | — (usage error) | Nothing to detect; offer both decisions |
+| `docs/adr/` present but empty | any changed file | `0` | `[]` | No process record; offer both decisions |
+| Records binding `src/**` only | a record inside the corpus | `0` | `[]` | No process record; offer both decisions |
+| Plus a record binding `docs/adr/**` | a record inside the corpus | `0` | `["0002"]` | Detected by matcher, not by id or title |
+| Unmigrated MADR (no frontmatter fence) | a record inside the corpus | `1` | `[]` + `rule: frontmatter-fence` | **Trap** — a parse failure, not an absence |
+
+Re-measured for **0.3.1**, after review found that reading `governing` alone and
+trusting `adr check`'s exit code were both unsound. Same method, same throwaway
+corpora, CLI built from the fix branch:
+
+| Corpus | Probe | Exit | `governing` | `activeProposals` | `history` | Reading |
+|---|---|---|---|---|---|---|
+| Process record `status: proposed`, `affects: docs/adr/**` | that record | `0` | `[]` | `["0001"]` | `[]` | **Trap** — the record exists; `governing` alone reports absence |
+| Process record `status: rejected`, same matcher | that record | `0` | `[]` | `[]` | `["0001"]` | **Trap** — settled against; re-proposing it is failure mode 3 |
+| Malformed process record + healthy unrelated record | the *healthy* record | `0` | `[]` | `[]` | `[]` | **Trap** — findings come back *empty*; corpus-wide `adr lint` exits `1` |
+| Same corpus | corpus-wide `adr lint` | `1` | — | — | — | The signal that actually catches it |
+| No corpus at all | `adr lint --dir docs/adr` | `2` | — | — | — | `/adr-draft`'s old gate stopped here |
+| No corpus at all | `adr new "<title>" --dir docs/adr` | `0` | — | — | — | Creates the directory, allocates `0001` |
+
+The first three rows each ship an offer the repository did not need. The last two
+are why `/adr-draft`'s exit-`2` gate was narrowed: `adr lint` and `adr new`
+disagree about whether an absent corpus is an error, and `adr new` is right,
+because `createAdr` creates the directory itself.
+
+### Functional run of the offer's write path (0.3.1)
+
+Detection above is measured against fixtures. This is the first exercise of the
+**write path end to end**, in an ephemeral consumer repository — a fresh `git
+init` with one source file and no `docs/adr/` — driving the CLI the way the
+guidance tells an agent to:
+
+| Step | Command | Result |
+|---|---|---|
+| 1 | `adr lint --dir docs/adr` | exit `2`, `Corpus directory not found` — the bootstrap case |
+| 2 | `adr new "<title>" --dir docs/adr` | exit `0`, creates the directory, allocates `0001` |
+| 3 | `adr lint --dir docs/adr` | exit `0` — the corpus is valid |
+| 4 | `adr check --dir docs/adr --json -- docs/adr/0001-*.md` | exit `0`, **all three buckets empty** |
+| 5 | same probe, after hand-adding `affects: [{type: path, pattern: "docs/adr/**"}]` | exit `0`, `activeProposals: ["0001"]` |
+
+Steps 1–3 confirm the narrowed `/adr-draft` gate: the headline case is writable.
+
+**Step 4 found a defect the static review did not.** `adr new` scaffolds
+`affects: []` and `status: draft`. A record with no matcher binds nothing, so it
+is invisible to detection no matter how many buckets are read — every bucket
+comes back empty and the next audit offers the same decision again. The
+three-bucket fix only engages once the record carries a matcher covering the
+corpus directory, which step 5 demonstrates. ADR-0038 listed exactly this
+outcome — "a consumer's bootstrap record lands with no rejected alternative and
+no `affects` matcher" — under *how we would know this was wrong*, and it turned
+out to be the default behavior of the path the offer prescribes. Both the skill
+and the command now require the offer to state the matcher.
+
+**Still unverified:** whether any host actually surfaces the offer in a real
+session. That needs an interactive host run and remains open as action item 5.
+
+
+The last row changed the guidance. An unmigrated MADR corpus returns exactly the
+same empty `governing` bucket as a corpus with no process record, because none of
+its records parse — including, in the fixture, the process record itself. Reading
+the bucket without reading the exit code first would offer a duplicate of a record
+the repository already has, which is the failure ADR-0038 names as proof the
+design is wrong. The skill reads the exit code first and names the MADR case;
+a wiring test covers both sentences, and was confirmed failing against the
+pre-fix text.
+
+Detection is therefore measured. What remains unverified is **host behavior**:
+whether Claude Code, Copilot CLI, or opencode actually surface the offer when
+backfill runs against an empty corpus. That needs a functional run in a real
+host session and is tracked as an open action item on ADR-0038.
+
 ## Verdict
 
 The plugin's six components load on Copilot CLI and function correctly against a

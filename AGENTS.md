@@ -5,7 +5,7 @@ that are enforceable in CI and legible to agents, without leaving git.
 Status: early — phases 0–6 landed and v0.13.0 is public. `@adrkit/core`,
 `@adrkit/evaluator`, `@adrkit/cli` (`lint`, `new`, `graph`, `explain`,
 `check`, `queue`, `migrate --from madr`, `evaluate`) are published on npm, as is
-the independently versioned `@adrkit/spec-kit` Spec Kit extension (0.1.3); the
+the independently versioned `@adrkit/spec-kit` Spec Kit extension (0.1.4); the
 repository-backed CI Action is available at `mbeacom/adrkit/packages/ci@v0`.
 The governing-decisions Action also has a root `action.yml` alias for GitHub
 Marketplace beginning with v0.13.0. Root
@@ -124,7 +124,8 @@ second distribution surface
 namespaced commands to a [Spec Kit](https://github.com/github/spec-kit) project
 — `/speckit.adrkit.context`, `/speckit.adrkit.check`, `/speckit.adrkit.draft` —
 plus one **optional** `after_plan` hook that offers to run the check. Pinned to
-Spec Kit `>=0.13.0,<0.16.0`, verified against 0.13.0, 0.14.4, and 0.15.1.
+Spec Kit `>=0.13.0,<1.1.0`, verified against 0.13.0, 0.14.4, 0.15.1, 0.16.5,
+1.0.0, and 1.0.4–1.0.6.
 Authorized by
 [ADR-0019](./docs/adr/0019-ship-the-spec-kit-extension-treating-the-spike-no-go-as-a-measurement-artifact.md).
 **Landed / reference-verified** on ADR-0014 rungs 1–2; rung 3 open.
@@ -135,7 +136,7 @@ Things that are load-bearing and easy to break:
   [ADR-0007](./docs/adr/0007-adapter-isolation-and-public-surface-build.md) — its
   semver contract is with Spec Kit, not with `@adrkit/core`. It releases on its
   own `spec-kit-v<semver>` tag (see [`docs/RELEASING.md`](./docs/RELEASING.md)),
-  currently **0.1.3**, and does **not** move with the repository version.
+  currently **0.1.4**, and does **not** move with the repository version.
 - **Two version fields must agree**: `package.json` (npm) and `extension.yml`
   (Spec Kit). A test asserts they match — 0.1.1 shipped with them diverged and
   told every user the wrong version.
@@ -224,8 +225,12 @@ validation. Scope and limitations:
 That functional evidence covers the v0.1.0 context/check/draft/queue baseline.
 The v0.2.0 backfill skill and command are contract- and static-host-validated.
 A fresh Copilot synthetic-consumer run produced the expected covered/history/new
-classification and a complete handoff without changing the worktree. No
-persistent reference-repository or external run exists.
+classification and a complete handoff without changing the worktree. For the
+v0.3.1 bootstrap-record offer, detection is measured against synthetic corpora
+(missing, empty, source-only, process-record-present, unmigrated MADR, and — added
+after 0.3.0 review — `proposed`, `rejected`, and mixed-validity); host surfacing
+behavior and the offer's write path end to end are both unverified. No persistent reference-repository or
+external run exists.
 
 Things that are load-bearing and easy to break — each measured against the real
 hosts rather than read off their docs, so a change that "looks more correct"
@@ -266,7 +271,36 @@ will usually be a regression:
   treats source text as untrusted data, stays inside the worktree, enforces
   explicit scan caps, and requires confirmation before running a CLI resolved
   inside an inherited repository.
-- `copilot plugin install` prints only a skill count. Version 0.2.0 should report
+- **The bootstrap record is an offer, not a candidate.** A repository with no
+  corpus is missing the process decision (keep decisions in git) and the tooling
+  decision (enforce them with adrkit). Nothing proves a human ratified either,
+  so it stays out of the candidates table and out of every `backfillHandoff` —
+  it governs the corpus directory, a glob, and could never supply concrete
+  `candidatePaths` — and routes to plain `/adr-draft`. Adopting adrkit is never
+  a supersession of the decision to record decisions; `supersedes` is reserved
+  for a prior *tooling* record, and a MADR corpus is migrated, not superseded.
+  Detection reads the exit code **before** the buckets, and reads **all three
+  buckets** — `governing` holds `accepted` alone, so `activeProposals`
+  (`draft`/`proposed`) and `history` (`rejected`/`superseded`/`deprecated`) are
+  where a record already settling the question actually sits. Reading
+  `governing` by itself makes the offer re-propose its own output, because
+  `/adr-draft` writes `proposed`. The corpus-wide gate is `adr lint`, not
+  `adr check`, whose exit code is path-scoped: a malformed record elsewhere
+  leaves `adr check` at exit `0` with an empty result. Both the skill **and**
+  `commands/adr-backfill.md` carry this, because `/adr-backfill` loads the
+  command
+  ([ADR-0038](./docs/adr/0038-offer-the-bootstrap-decision-record-as-an-offer-rather-than-a-backfill-candidate.md)).
+- **The offered record must bind the corpus directory.** `adr new` scaffolds
+  `affects: []`, and a record that binds nothing is invisible to the detection
+  above however many buckets are read — so the offer states the matcher. Found
+  by the first functional run of the write path, not by review; it is the
+  failure ADR-0038 already listed under "how we would know this was wrong".
+- **`/adr-draft` can write into a repository with no corpus.** Its `adr lint`
+  gate stops on exit `2` except when the corpus directory does not exist yet:
+  `adr new` creates it and allocates `0001`, so the bootstrap offer's own
+  headline case is writable. A corpus that exists and does not parse is still a
+  hard stop.
+- `copilot plugin install` prints only a skill count. Version 0.3.1 should report
   two skills; that does not inventory the agent or commands — verify them in a
   fresh session.
 
